@@ -1,5 +1,5 @@
 use inquire::Select;
-use std::process;
+pub use std::process;
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
@@ -219,7 +219,7 @@ async fn main() {
             let course: Course = get_course(&client, &local_data.token).await;
             let assignment: Assignment = get_assignment(&client, &local_data.token, course.id).await;
             let assignment_data: AssignmentData = get_assignment_data(&client, &local_data.token, course.id, assignment.id).await;
-            println!("{}", parser::create_markdown(&assignment_data.description, &local_data.name, assignment.name));
+            println!("\n{}", parser::create_markdown(&assignment_data.description, &local_data.name, assignment.name));
         },
         _ => {
             println!("Sorry! Working on the implementation for this...");
