@@ -21,15 +21,15 @@ impl BaseHtml {
     fn convert_doc_to_struct(doc: &str) -> BaseHtml {
 
         let json_string: String = Dom::parse(doc).unwrap_or_else(|error| {
-            println!("Couldn't parse the HTML Document: {}", error);
+            println!("Couldn't parse the HTML Document: {error}");
             process::exit(1);
         }).to_json().unwrap_or_else(|error| {
-            println!("Couldn't parse the Dom Object into JSON: {}", error);
+            println!("Couldn't parse the Dom Object into JSON: {error}");
             process::exit(1);
         });
     
         serde_json::from_str::<BaseHtml>(&json_string).unwrap_or_else(|error| {
-            println!("Couldn't parse the JSON into a valid BaseHtml object: {}", error);
+            println!("Couldn't parse the JSON into a valid BaseHtml object: {error}");
             process::exit(1);
         })
     }
@@ -70,11 +70,11 @@ impl ListType {
                     markdown_str.push('\n');
                 }
                 let num_tabs: String = String::from("    ").repeat(i);
-                markdown_str.push_str(&format!("{}{}. ", num_tabs, n));
+                markdown_str.push_str(&format!("{num_tabs}{n}. "));
             },
             ListType::Unordered {indent: i } => {
                 let num_tabs: String = String::from("    ").repeat(i);
-                markdown_str.push_str(&format!("\n{}- ", num_tabs));
+                markdown_str.push_str(&format!("\n{num_tabs}- "));
             }
         }
     }
@@ -96,7 +96,7 @@ impl ListType {
 
 
 fn create_markdown_header(assignment_name: &str, user_name: &str) -> String {
-    format!("# {}\n#### _By {}_\n\n", assignment_name, user_name)
+    format!("# {assignment_name}\n#### _By {user_name}_\n\n")
 }
 
 // Questions are always Ordered lists in my experience. Otherwise, I'll have to make some changes...

@@ -1,2 +1,4 @@
 *.json
 target/
+test/
+*.html

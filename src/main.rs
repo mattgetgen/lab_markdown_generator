@@ -1,8 +1,10 @@
-use inquire::Select;
+use inquire::{Confirm, Select};
+use std::io::Write;
 pub use std::process;
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
+use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -14,7 +16,6 @@ mod parser;
 enum MenuOption {
     NewLabNote,
     SubmitLabNote,
-    SubmitAssignment,
 }
 
 impl fmt::Display for MenuOption {
@@ -22,7 +23,6 @@ impl fmt::Display for MenuOption {
         match *self {
             MenuOption::NewLabNote => write!(f, "New Lab Note"),
             MenuOption::SubmitLabNote => write!(f, "Submit Lab Note"),
-            MenuOption::SubmitAssignment => write!(f, "Submit Assignment"),
         }
     }
 }
@@ -34,7 +34,6 @@ impl MenuOption {
         let main_options: Vec<MenuOption> = vec!{
             MenuOption::NewLabNote,
             MenuOption::SubmitLabNote,
-            MenuOption::SubmitAssignment,
         };
 
         let answer: MenuOption = Select::new("What would you like to do?", main_options)
@@ -52,6 +51,7 @@ impl MenuOption {
 struct LocalData {
     name: String,
     token: String,
+    base_dir: String,
 }
 
 impl LocalData {
@@ -63,19 +63,29 @@ impl LocalData {
         let local_data: String = fs::read_to_string(&local_file)
             .unwrap_or_else(|error| {
             if error.kind() == ErrorKind::NotFound {
-                println!("File `{}` not found!: {}", local_file, error);
-                println!("\nPlease create a `{}` file with this format:\n{{\n\t\"name\": \"<your name here>\",\n\t\"token\": \"<token from canvas here>\"\n}}", local_file);
+                println!("File `{local_file}` not found!: {error}");
+                println!("\nPlease create a `{local_file}` file with this format:
+                \n{{
+                    \n\t\"name\": \"<your name here>\",
+                    \n\t\"token\": \"<token from canvas here>\",
+                    \n\t\"base_dir\": \"<full directory path for storing lab file here>\"
+                \n}}");
                 process::exit(1);
             } else {
-                println!("Problem opening the file: {:?}", error);
+                println!("Problem opening the file: {error:?}");
                 process::exit(1);
             }
         });
 
         // make sure the JSON is the correct format.
         serde_json::from_str(&local_data).unwrap_or_else(|error| {
-            println!("Invalid JSON format in `{}`: {}.", local_file, error);
-            println!("\nPlease make sure the `{}` file is formatted like this: \n{{\n\t\"name\": \"<your name here>\",\n\t\"token\": \"<token from canvas here>\"\n}}", local_file);
+            println!("Invalid JSON format in `{local_file}`: {error}.");
+            println!("\nPlease make sure the `{local_file}` file is formatted like this: 
+            \n{{
+                \n\t\"name\": \"<your name here>\",
+                \n\t\"token\": \"<token from canvas here>\",
+                \n\t\"base_dir\": \"<full directory path for storing lab file here>\"
+                \n}}");
             process::exit(1);
         })
     }
@@ -84,7 +94,7 @@ impl LocalData {
 #[derive(Deserialize)]
 struct Course {
     id: i32,
-    is_public: bool,
+    // is_public_to_auth_users: bool,
     name: String,
 }
 
@@ -102,9 +112,9 @@ impl Course {
             for item in items.into_iter() {
                 if let Ok(course) = serde_json::from_value::<Course>(item) {
                     // use this when I actually have public courses.
-                    /*if course.is_public {
-                        courses.push(course);
-                    }*/
+                    // if course.is_public_to_auth_users {
+                    //     courses.push(course);
+                    // }
                     // for now, just push all :(
                     courses.push(course);
                 }
@@ -124,9 +134,38 @@ impl Course {
 }
 
 #[derive(Deserialize)]
+struct AssignmentGroup {
+    id: i32,
+    name: String,
+}
+
+impl fmt::Display for AssignmentGroup {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl AssignmentGroup {
+    fn get_lab_group(assignment_group_json: Value) -> Option<i32> {
+        let mut assignment_groups: Vec<AssignmentGroup> = Vec::new();
+        if let Value::Array(items) = assignment_group_json {
+            for item in items.into_iter() {
+                if let Ok(group) = serde_json::from_value::<AssignmentGroup>(item) {
+                    assignment_groups.push(group);
+                }
+            }
+            if let Some(group) = assignment_groups.into_iter().find(|x| x.name == "Labs & Homework") {
+                return Some(group.id);
+            }
+        }
+        None
+    }
+}
+
+#[derive(Deserialize)]
 struct Assignment {
     id: i32,
-    has_submitted_submissions: bool,
+    // has_submitted_submissions: bool,
     name: String,
 }
 
@@ -177,7 +216,7 @@ struct AssignmentData {
 impl AssignmentData {
     fn get_assignment_data(assignment_json: Value) -> AssignmentData {
         serde_json::from_value::<AssignmentData>(assignment_json.clone()).unwrap_or_else(|error| {
-            println!("Invalid Response Body from canvas!: {}\n with JSON: {}", error, assignment_json);
+            println!("Invalid Response Body from canvas!: {error}\n with JSON: {assignment_json}");
             process::exit(1);
         })
     }
@@ -190,9 +229,16 @@ async fn get_course(client: &Client, token: &str) -> Course {
 }
 
 async fn get_assignment(client: &Client, token: &str, course_id: i32) -> Assignment {
-    let assignments_json: Value = requester::get_response(client, token, requester::ApiEndpoint::AssignmentList(course_id)).await;
-    let assignments: Vec<Assignment> = Assignment::get_all_assignments(assignments_json);
-    Assignment::choose_assignment(assignments)
+    let assignment_groups_json: Value = requester::get_response(client, token, requester::ApiEndpoint::AssignmentGroupList(course_id)).await;
+    if let Some(group_id) = AssignmentGroup::get_lab_group(assignment_groups_json) {
+
+        let assignments_json: Value = requester::get_response(client, token, requester::ApiEndpoint::AssignmentList(course_id, group_id)).await;
+        let assignments: Vec<Assignment> = Assignment::get_all_assignments(assignments_json);
+        Assignment::choose_assignment(assignments)
+    } else {
+        println!("Error: No lab group for this class");
+        process::exit(1);
+    }
 }
 
 async fn get_assignment_data(client: &Client, token: &str, course_id: i32, assignment_id: i32) -> AssignmentData {
@@ -200,26 +246,116 @@ async fn get_assignment_data(client: &Client, token: &str, course_id: i32, assig
     AssignmentData::get_assignment_data(assignment_json)
 }
 
+fn should_create_dir(path: &str) -> bool {
+    let ans = Confirm::new(&format!("{path} directory doesn't exist, do you want to create it?"))
+        .with_default(true)
+        .prompt();
+    matches!(ans, Ok(true))
+}
+
+fn create_dir(dir: &Path, content: &str) {
+    let path_name = dir.to_str().unwrap_or("");
+
+    match should_create_dir(path_name) {
+        // try and create it that bad boy.
+        true => {
+            fs::create_dir_all(dir).unwrap_or_else(|e| {
+                // error creating the dir, just print the content.
+                println!("Error creating directory: {e}");
+                println!("lab note content:\n{content}");
+                process::exit(1);
+            });
+            println!("Successfully created directory!");
+        },
+        // don't try to create it, just print the content.
+        false => {
+            println!("lab note content:\n{content}");
+            process::exit(0);
+        },
+    }
+}
+
+fn should_overwrite_file(file_path: &str) -> bool {
+    let ans = Confirm::new(&format!("{file_path} already exists, do you want to overwrite it?"))
+        .with_default(false)
+        .prompt();
+    matches!(ans, Ok(true))
+}
+
+fn create_file(file_path: String, content: &str) -> Option<String> {
+
+    let path: &Path = Path::new(&file_path);
+    // file already exists and the user doesn't want to overwrite it, do nothing.
+    if path.is_file() && !should_overwrite_file(&file_path) {
+        return Some(file_path);
+    }
+
+    let mut file: fs::File = fs::File::create(path).unwrap_or_else(|e| {
+        // error creating the file, just print the content.
+        println!("Error creating file: {e}");
+        println!("lab note content:\n{content}");
+        process::exit(1);
+    });
+
+    if let Err(e) = file.write_all(content.as_bytes()) {
+        // error writing to the file, just print the content.
+        println!("Error writing to the file: {e}");
+        println!("lab note content:\n{content}");
+        process::exit(1);
+    };
+
+    Some(file_path)
+}
+
+async fn handle_new_lab_note(client: &Client, local_data: &LocalData) -> Option<String> {
+    let course: Course = get_course(client, &local_data.token).await;
+    let assignment: Assignment = get_assignment(client, &local_data.token, course.id).await;
+    let assignment_data: AssignmentData = get_assignment_data(client, &local_data.token, course.id, assignment.id).await;
+    
+    let content: String = parser::create_markdown(&assignment_data.description, &local_data.name, assignment.name.clone());
+    let course_dir: String = local_data.base_dir.to_owned() + &course.name[..7].trim().to_lowercase().replace(' ', "") + "/lab/";
+    let file_name: String = assignment.name.trim().to_lowercase().replace(' ', "_") + ".md";
+
+    let dir: &Path = Path::new(&course_dir);
+    // dir doesn't exist, create it.
+    if !dir.is_dir() {
+        create_dir(dir, &content);
+    }
+
+    let file_path: String = format!("{course_dir}/{file_name}");
+
+    create_file(file_path, &content)
+}
+
 #[tokio::main]
 async fn main() {
     let local_data: LocalData = LocalData::get_local_data();
+    if local_data.base_dir.contains('~') {
+        println!("Please use the full path to the lab note directory");
+        process::exit(1);
+    }
     // create the client
     let timeout: Duration = Duration::new(5, 0);
     let client: Client = ClientBuilder::new()
         .timeout(timeout)
         .build()
         .unwrap_or_else(|error| {
-        println!("Error builing the client: {:?}", error);
+        println!("Error builing the client: {error:?}");
         process::exit(1);
     });
 
     let option: MenuOption = MenuOption::main_menu();
     match option {
         MenuOption::NewLabNote => {
-            let course: Course = get_course(&client, &local_data.token).await;
-            let assignment: Assignment = get_assignment(&client, &local_data.token, course.id).await;
-            let assignment_data: AssignmentData = get_assignment_data(&client, &local_data.token, course.id, assignment.id).await;
-            println!("\n{}", parser::create_markdown(&assignment_data.description, &local_data.name, assignment.name));
+            if let Some(file_path) = handle_new_lab_note(&client, &local_data).await {
+                std::process::Command::new("/usr/bin/sh")
+                    .arg("-c")
+                    .arg(format!("vim {file_path}"))
+                    .spawn()
+                    .expect("Error: Failed to run editor")
+                    .wait()
+                    .expect("Error: Editor returned a non-zero status");
+            }
         },
         _ => {
             println!("Sorry! Working on the implementation for this...");
